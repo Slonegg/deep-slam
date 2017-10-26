@@ -1,3 +1,7 @@
+cpp/_build
+cpp/_release
+python/env
+
 # Prerequisites
 *.d
 
@@ -30,3 +34,13 @@
 *.exe
 *.out
 *.app
+
+# Images
+*.ppm
+*.pgm
+
+# Python generated
+*.egg-info
+
+# Misc
+*.dump
