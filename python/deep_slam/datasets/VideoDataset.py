@@ -3,6 +3,10 @@ import numpy as np
 import cv2
 import os
 import argparse
+from zipfile import ZipFile
+import io
+
+
 
 
 class VideoDataset(object):
@@ -14,9 +18,16 @@ class VideoDataset(object):
         :param target_size:
         """
         self.path = path
-        self.filenames = os.listdir(path)
         self.color_mode = color_mode
         self.target_size = target_size
+        self.compressed = False
+        if os.path.splitext(path)[1] == '.zip':
+            self.compressed = True
+            self.archive = ZipFile(path, 'a')
+            self.filenames = self.archive.namelist()
+        else:
+            self.filenames = os.listdir(path)
+
         if color_mode == 'rgbd':
             self.num_channels = 3
             self.num_samples = len(self.filenames) // 3
@@ -27,10 +38,45 @@ class VideoDataset(object):
         self.rgb_template = "frame-%06d.color.png"
         self.depth_template = "frame-%06d.depth.png"
         self.pose_template = "frame-%06d.pose.txt"
+        if self.compressed:
+            archive_name = os.path.splitext(os.path.basename(path))[0]
+            self.rgb_template = "%s/%s" % (archive_name, self.rgb_template)
+            self.depth_template = "%s/%s" % (archive_name, self.depth_template)
+            self.pose_template = "%s/%s" % (archive_name, self.pose_template)
+            self.path = ""
         if not target_size:
             rgb_file = os.path.join(self.path, self.rgb_template % (0,))
-            rgb_img = cv2.imread(rgb_file, cv2.IMREAD_COLOR)
+            rgb_img = self.imread(rgb_file, cv2.IMREAD_COLOR)
             self.target_size = [rgb_img.shape[0], rgb_img.shape[1]]
+
+    def imread(self, fname, flags):
+        if self.compressed:
+            data = self.archive.read(fname)
+            img = cv2.imdecode(np.frombuffer(data, np.uint8), flags)
+        else:
+            img = cv2.imread(fname, cv2.IMREAD_COLOR)
+        return img
+
+    def imwrite(self, fname, img):
+        if self.compressed:
+            _, data = cv2.imencode('.png', img)
+            self.archive.writestr(fname, data)
+        else:
+            cv2.imwrite(fname, img)
+
+    def loadtxt(self, filename):
+        if self.compressed:
+            filename = self.archive.open(filename)
+        return np.loadtxt(filename)
+
+    def savetxt(self, filename, mat):
+        if self.compressed:
+            f = io.BytesIO()
+            np.savetxt(f, mat)
+            self.archive.writestr(filename, f.getvalue())
+        else:
+            np.savetxt(filename, mat)
+
 
     def get_batch(self, offset, batchsize=1):
         img_batch = np.zeros([batchsize, self.target_size[0], self.target_size[1], self.num_channels])
@@ -41,16 +87,16 @@ class VideoDataset(object):
             rgb_file = os.path.join(self.path, self.rgb_template % ((offset + idx) % self.num_samples,))
             pose_file = os.path.join(self.path, self.pose_template % ((offset + idx) % self.num_samples,))
 
-            rgb_img = cv2.imread(rgb_file, cv2.IMREAD_COLOR)
+            rgb_img = self.imread(rgb_file, cv2.IMREAD_COLOR)
             if self.color_mode == 'rgbd':
                 depth_file = os.path.join(self.path, self.depth_template % (offset,))
-                depth_img = cv2.imread(depth_file, cv2.IMREAD_GRAYSCALE)
+                depth_img = self.imread(depth_file, cv2.IMREAD_GRAYSCALE)
 
                 if depth_img.shape[0] != self.target_size[0] or depth_img.shape[1] != self.target_size[1]:
                     depth_img = cv2.resize(depth_img, (self.target_size[1], self.target_size[0]),
                                            interpolation=cv2.INTER_AREA)
                 depth_batch[idx, :, :] = depth_img
-            pose = np.loadtxt(pose_file)
+            pose = self.loadtxt(pose_file)
 
             if rgb_img.shape[0] != self.target_size[0] or rgb_img.shape[1] != self.target_size[1]:
                 rgb_img = cv2.resize(rgb_img, (self.target_size[1], self.target_size[0]),
@@ -75,9 +121,12 @@ class VideoDataset(object):
 
         rgb_file = os.path.join(self.path, self.rgb_template % (self.num_samples,))
         pose_file = os.path.join(self.path, self.pose_template % (self.num_samples,))
-        cv2.imwrite(rgb_file, img)
-        np.savetxt(pose_file, pose)
-
+        self.imwrite(rgb_file, img)
+        self.savetxt(pose_file, pose)
+        if self.color_mode == 'rgbd':
+            depth_file = os.path.join(self.path, self.depth_template % (self.num_samples,))
+            self.imwrite(depth_file, depth)
+        self.num_samples += 1
 
 
 if __name__ == "__main__":
@@ -86,4 +135,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     dataset = VideoDataset(args.dataset)
     imgs, depth, poses = dataset.get_batch(0, 1)
+    dataset.add_sample(imgs[0], depth[0], poses[0])
     print(imgs.shape, depth.shape, poses.shape)
+    print(poses)
