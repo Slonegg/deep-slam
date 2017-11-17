@@ -7,8 +7,6 @@ from zipfile import ZipFile
 import io
 
 
-
-
 class VideoDataset(object):
     def __init__(self, path, color_mode='rgbd', target_size=None):
         """
