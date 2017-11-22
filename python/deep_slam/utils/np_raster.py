@@ -10,15 +10,15 @@ def barycentric(p, t):
     """
     na = np.newaxis
 
-    A = -t[:, 1, 1] * t[:, 2, 0] + t[:, 0, 1] * (-t[:, 1, 0] + t[:, 2, 0])\
-        + t[:, 0, 0] * (t[:, 1, 1] - t[:, 2, 1]) + t[:, 1, 0] * t[:, 2, 1]
-    u = (t[:, 0, 1] * t[:, 2, 0] - t[:, 0, 0] * t[:, 2, 1])[:, na, na]\
-        + (t[:, 2, 1] - t[:, 0, 1])[:, na, na] * p[0]\
-        + (t[:, 0, 0] - t[:, 2, 0])[:, na, na] * p[1]
+    A = -t[1, 1] * t[0, 2] + t[1, 0] * (-t[0, 1] + t[0, 2])\
+        + t[0, 0] * (t[1, 1] - t[1, 2]) + t[0, 1] * t[1, 2]
+    u = (t[1, 0] * t[0, 2] - t[0, 0] * t[1, 2])[:, na, na]\
+        + (t[1, 2] - t[1, 0])[:, na, na] * p[0]\
+        + (t[0, 0] - t[0, 2])[:, na, na] * p[1]
     u *= np.sign(A)[:, na, na]
-    v = (t[:, 0, 0] * t[:, 1, 1] - t[:, 0, 1] * t[:, 1, 0])[:, na, na]\
-        + (t[:, 0, 1] - t[:, 1, 1])[:, na, na] * p[0]\
-        + (t[:, 1, 0] - t[:, 0, 0])[:, na, na] * p[1]
+    v = (t[0, 0] * t[1, 1] - t[1, 0] * t[0, 1])[:, na, na]\
+        + (t[1, 0] - t[1, 1])[:, na, na] * p[0]\
+        + (t[0, 1] - t[0, 0])[:, na, na] * p[1]
     v *= np.sign(A)[:, na, na]
 
     mask = np.logical_and(u >= 0, v >= 0)
@@ -43,7 +43,7 @@ def persp_interp(bar, vertex_inv_z, pixel_inv_z, vertex_attr):
     """
     na = np.newaxis
     if vertex_attr.ndim == 3:
-        return np.sum(bar[:, na] * vertex_attr[:, :, :, na, na] * vertex_inv_z[:, na, :, na, na], axis=0) / pixel_inv_z[na]
+        return np.sum(bar[na, :] * vertex_attr[:, :, :, na, na] * vertex_inv_z[na, :, :, na, na], axis=1) / pixel_inv_z[na]
     elif vertex_attr.ndim == 2:
         return np.sum(bar * vertex_attr[:, :, na, na] * vertex_inv_z[:, :, na, na], axis=0) / pixel_inv_z
     else:
@@ -59,7 +59,7 @@ def block_rasterize(vertices, attributes, indices, block_inds, block_tris, width
         for j in range(nx):
             x[i*nx + j] = np.arange(j*block_size[0], (j+1)*block_size[0]) + 0.5
             y[i*nx + j] = np.arange(i*block_size[1], (i+1)*block_size[1]) + 0.5
-    triangles = vertices[indices[block_tris]]
+    triangles = vertices[:, indices[:, block_tris]]
 
     # find barycentric coordinates
     points = np.array([np.meshgrid(x[i], y[i]) for i in block_inds])
@@ -68,7 +68,7 @@ def block_rasterize(vertices, attributes, indices, block_inds, block_tris, width
     bar = np.stack((1 - s - t, s, t))
 
     # perform z-test
-    vertex_inv_z = 1 / np.maximum(triangles[:, :, 2].T, np.finfo(np.float32).eps)
+    vertex_inv_z = 1 / np.maximum(triangles[2], np.finfo(np.float32).eps)
     pixel_inv_z = np.sum(bar * vertex_inv_z[:, :, np.newaxis, np.newaxis], axis=0)
     pixel_inv_z[np.logical_not(mask)] = np.inf
 
@@ -76,8 +76,8 @@ def block_rasterize(vertices, attributes, indices, block_inds, block_tris, width
     varyings = {}
     for name, attribute in attributes.items():
         if name not in ('position',):
-            x = np.array(attribute)[indices[block_tris]]
-            varyings[name] = persp_interp(bar, vertex_inv_z, pixel_inv_z, np.rollaxis(x, 0, 3))
+            x = attribute[:, indices[:, block_tris]]
+            varyings[name] = persp_interp(bar, vertex_inv_z, pixel_inv_z, x)
     color = varyings['color'] if 'color' in varyings else 255
     color = np.rollaxis(color, 0, 4)
 
@@ -137,9 +137,9 @@ def split_triangles(vertices, indices, triangles, viewport, block_size):
     v0, v1 = split_viewport(viewport, axis, split)
 
     # split triangles
-    verts = vertices[indices[triangles]]
-    tri_l = triangles[np.any([verts[:, i, axis] < split for i in range(3)], axis=0)]
-    tri_r = triangles[np.any([verts[:, i, axis] >= split for i in range(3)], axis=0)]
+    v = vertices[:, indices[:, triangles]]
+    tri_l = triangles[np.any([v[axis, i] < split for i in range(3)], axis=0)]
+    tri_r = triangles[np.any([v[axis, i] >= split for i in range(3)], axis=0)]
 
     return split_triangles(vertices, indices, tri_l, v0, block_size)\
         + split_triangles(vertices, indices, tri_r, v1, block_size)
@@ -148,24 +148,26 @@ def split_triangles(vertices, indices, triangles, viewport, block_size):
 def triangles_in_viewport(vertices, indices, triangles, viewport):
     # remove triangles that are entirely outside one of the viewport edges
     viewport = np.array(viewport)
-    verts = vertices[indices[triangles]]
-    cond = np.all([verts[:, i, 0] < viewport[0, 0] for i in range(3)], axis=0)
-    cond = np.logical_or(cond, np.all([verts[:, i, 1] < viewport[0, 1] for i in range(3)], axis=0))
-    cond = np.logical_or(cond, np.all([verts[:, i, 0] > viewport[1, 1] for i in range(3)], axis=0))
-    cond = np.logical_or(cond, np.all([verts[:, i, 1] > viewport[1, 1] for i in range(3)], axis=0))
+    v = vertices[:, indices[:, triangles]]
+    cond = np.all([v[0, i] < viewport[0, 0] for i in range(3)], axis=0)
+    cond = np.logical_or(cond, np.all([v[1, i] < viewport[0, 1] for i in range(3)], axis=0))
+    cond = np.logical_or(cond, np.all([v[0, i] > viewport[1, 1] for i in range(3)], axis=0))
+    cond = np.logical_or(cond, np.all([v[1, i] > viewport[1, 1] for i in range(3)], axis=0))
     return triangles[np.logical_not(cond)]
 
 
 def to_homogeneous(vertices):
-    vertices = np.array(vertices)
-    if vertices.shape[1] < 4:
-        vertices = np.concatenate((vertices, np.ones((vertices.shape[0], 4 - vertices.shape[1]))), axis=-1)
+    if vertices.shape[0] < 4:
+        vertices = np.concatenate((vertices, np.ones((4 - vertices.shape[0], *vertices.shape[1:]))), axis=0)
     return vertices
 
 
 def to_screen_space(vertices, width, height):
-    return (vertices * 0.5 + 0.5) * np.array([width, height, 0.5, 1.0], dtype=np.float32)\
-           + np.array([[0, 0, 0.5, 0]], dtype=np.float32)
+    vertices = vertices * 0.5 + 0.5
+    vertices[0] *= width
+    vertices[1] *= height
+    vertices[2] = vertices[2] * 0.5 + 0.5
+    return vertices
 
 
 def block_triangles(vertices, indices, width, height, block_size=(16, 16)):
@@ -191,7 +193,8 @@ def block_triangles(vertices, indices, width, height, block_size=(16, 16)):
     vertices = to_screen_space(vertices, width, height)
 
     # clip triangles
-    triangles = triangles_in_viewport(vertices, np.array(indices), np.arange(len(indices)), viewport)
+    indices = np.array(indices)
+    triangles = triangles_in_viewport(vertices, indices, np.arange(indices.shape[1]), viewport)
 
     # recursively distribute triangles in blocks
     triangles = split_triangles(vertices=vertices,
@@ -219,12 +222,15 @@ def rasterize(attributes, indices, mvp, width, height, block_size=(16, 16)):
     """
     assert width % block_size[0] == 0 and height % block_size[1] == 0
 
+    # make numpy arrays and transpose attributes, it is much easier to work with them this way
+    for name, attribute in attributes.items():
+        attributes[name] = np.array(attribute).T
+    indices = np.array(indices).T
+
     # apply model-view-projection transform
     vertices = to_homogeneous(attributes['position'])
-    vertices = vertices.T
     vertices = np.dot(mvp, vertices)
     vertices /= vertices[3]
-    vertices = vertices.T
 
     # find block triangles
     block_inds, block_tris = block_triangles(vertices, indices, width, height, block_size=block_size)
@@ -233,7 +239,6 @@ def rasterize(attributes, indices, mvp, width, height, block_size=(16, 16)):
     vertices = to_screen_space(vertices, width, height)
 
     # rasterize triangles in blocks
-    indices = np.array(indices)
     block_rt = block_rasterize(vertices, attributes, indices, block_inds, block_tris, width, height, block_size)
     rt = block_merge(block_inds, block_rt, width, height, block_size)
 

@@ -17,7 +17,7 @@ def test_block_triangles():
     vertices *= 2.0
     vertices -= 1.0
 
-    bi, bt = block_triangles(vertices, indices, width=w, height=h, block_size=(1, 1))
+    bi, bt = block_triangles(vertices.T, np.array(indices).T, width=w, height=h, block_size=(1, 1))
 
     # TODO: fix suboptimal block_triangles
     # cells that triangles intersect
