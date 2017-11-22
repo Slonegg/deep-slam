@@ -1,4 +1,3 @@
-import cv2
 from deep_slam.utils.np_raster import block_triangles, rasterize
 from deep_slam.utils.projection import ortho
 import numpy as np
@@ -9,7 +8,6 @@ def test_block_triangles():
                 [3.5, 2.5], [5.5, 2.5], [4.5, 1.5],
                 [1.5, 4.5], [4.5, 5.5], [3.5, 4.5]]
     indices = [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
-    num_triangles = len(indices)
     w = 7
     h = 6
 
@@ -19,19 +17,17 @@ def test_block_triangles():
     vertices *= 2.0
     vertices -= 1.0
 
-    bt = block_triangles(vertices, indices, width=w, height=h, block_size=(1, 1))
+    bi, bt = block_triangles(vertices, indices, width=w, height=h, block_size=(1, 1))
 
+    # TODO: fix suboptimal block_triangles
     # cells that triangles intersect
-    cells = [[14, 15, 21, 22, 23, 28, 29, 30, 36],
+    cells = [[14, 15, 16, 21, 22, 23, 28, 29, 30, 25, 35, 36, 37],
              [10, 11, 12, 17, 18, 19],
-             [29, 30, 31, 37, 38],
-             [0, 1, 2, 3, 4, 5, 6, 7, 25, 26, 27, 40, 41]]
-    for i in range(num_triangles + 1):
-        for c in cells[i]:
-            if i < num_triangles:
-                assert i in bt[c]
-            else:
-                assert np.all(bt[c] == i)
+             [29, 30, 31, 32, 36, 37, 38, 39]]
+    empty_cells = [0, 1, 2, 3, 4, 5, 6, 7, 25, 26, 27, 40, 41]
+    for i, t in zip(bi, bt):
+        assert i in cells[t]
+        assert i not in empty_cells
 
 
 def test_rasterize_zbuffer():

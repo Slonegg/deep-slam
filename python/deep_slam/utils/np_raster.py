@@ -8,26 +8,30 @@ def barycentric(p, t):
     :param t: array of triangle vertices of shape (height, width, 3, 2..4)
     :return: boolean array of shape (height, width), entry is true if point p[i, j] is in triangle t[i, j]
     """
-    A = -t[:, :, 1, 1] * t[:, :, 2, 0] + t[:, :, 0, 1] * (-t[:, :, 1, 0] + t[:, :, 2, 0])\
-        + t[:, :, 0, 0] * (t[:, :, 1, 1] - t[:, :, 2, 1]) + t[:, :, 1, 0] * t[:, :, 2, 1]
-    u = t[:, :, 0, 1] * t[:, :, 2, 0] - t[:, :, 0, 0] * t[:, :, 2, 1]\
-        + (t[:, :, 2, 1] - t[:, :, 0, 1]) * p[:, :, 0] + (t[:, :, 0, 0] - t[:, :, 2, 0]) * p[:, :, 1]
-    u *= np.sign(A)
-    v = t[:, :, 0, 0] * t[:, :, 1, 1] - t[:, :, 0, 1] * t[:, :, 1, 0]\
-        + (t[:, :, 0, 1] - t[:, :, 1, 1]) * p[:, :, 0] + (t[:, :, 1, 0] - t[:, :, 0, 0]) * p[:, :, 1]
-    v *= np.sign(A)
+    na = np.newaxis
+
+    A = -t[:, 1, 1] * t[:, 2, 0] + t[:, 0, 1] * (-t[:, 1, 0] + t[:, 2, 0])\
+        + t[:, 0, 0] * (t[:, 1, 1] - t[:, 2, 1]) + t[:, 1, 0] * t[:, 2, 1]
+    u = (t[:, 0, 1] * t[:, 2, 0] - t[:, 0, 0] * t[:, 2, 1])[:, na, na]\
+        + (t[:, 2, 1] - t[:, 0, 1])[:, na, na] * p[0]\
+        + (t[:, 0, 0] - t[:, 2, 0])[:, na, na] * p[1]
+    u *= np.sign(A)[:, na, na]
+    v = (t[:, 0, 0] * t[:, 1, 1] - t[:, 0, 1] * t[:, 1, 0])[:, na, na]\
+        + (t[:, 0, 1] - t[:, 1, 1])[:, na, na] * p[0]\
+        + (t[:, 1, 0] - t[:, 0, 0])[:, na, na] * p[1]
+    v *= np.sign(A)[:, na, na]
 
     mask = np.logical_and(u >= 0, v >= 0)
-    mask = np.logical_and(mask, (u + v) < np.abs(A))
+    mask = np.logical_and(mask, (u + v) < np.abs(A)[:, na, na])
 
     A = np.maximum(np.abs(A), np.finfo(np.float32).eps)
-    u /= A
-    v /= A
+    u /= A[:, na, na]
+    v /= A[:, na, na]
 
     return u, v, mask
 
 
-def persp_interp(b, vertex_inv_z, pixel_inv_z, vertex_attr):
+def persp_interp(bar, vertex_inv_z, pixel_inv_z, vertex_attr):
     """
     Perform perspective corrected interpolation in screen space.
     See [here](interpolation https://www.comp.nus.edu.sg/~lowkl/publications/lowk_persp_interp_techrep.pdf)
@@ -37,48 +41,80 @@ def persp_interp(b, vertex_inv_z, pixel_inv_z, vertex_attr):
     :param x: array of interpolant values at triangle vertices of shape (height, width, n)
     :return: array of interpolant values at pixels of shape (height, width, n)
     """
-    if vertex_attr.ndim == 4:
-        return np.moveaxis(np.sum(np.moveaxis(vertex_attr, 3, 0) * b * vertex_inv_z, axis=-1) / pixel_inv_z, 0, 2)
-    elif vertex_attr.ndim == 3:
-        return np.sum(vertex_attr * b * vertex_inv_z, axis=-1) / pixel_inv_z
+    na = np.newaxis
+    if vertex_attr.ndim == 3:
+        return np.sum(bar[:, na] * vertex_attr[:, :, :, na, na] * vertex_inv_z[:, na, :, na, na], axis=0) / pixel_inv_z[na]
+    elif vertex_attr.ndim == 2:
+        return np.sum(bar * vertex_attr[:, :, na, na] * vertex_inv_z[:, :, na, na], axis=0) / pixel_inv_z
     else:
         raise RuntimeError('Unexpected number of dimensions of attribute array')
 
 
-def block_rasterize(color_buffer, depth_buffer, vertices, attributes, indices, triangle_indices, width, height, block_size):
+def block_rasterize(vertices, attributes, indices, block_inds, block_tris, width, height, block_size):
     # coordinates of the triangles in the block, (height, width, 3, xy)
     nx, ny = width // block_size[0], height // block_size[1]
-    inds_map = np.zeros((height, width), dtype=np.int32)
+    x = np.zeros((nx*ny, block_size[0]), dtype=np.int32)
+    y = np.zeros((nx*ny, block_size[1]), dtype=np.int32)
     for i in range(ny):
         for j in range(nx):
-            oy = block_size[1]*i
-            ox = block_size[0]*j
-            inds_map[oy:oy+block_size[1], ox:ox+block_size[0]] = i*nx + j
-    triangles = vertices[indices[triangle_indices[inds_map]]]
-
-    # pixel coordinates, (height, width, xy)
-    x = np.arange(0, width) + 0.5
-    y = np.arange(0, height) + 0.5
-    points = np.swapaxes(np.array(np.meshgrid(x, y)).T, 0, 1)
+            x[i*nx + j] = np.arange(j*block_size[0], (j+1)*block_size[0]) + 0.5
+            y[i*nx + j] = np.arange(i*block_size[1], (i+1)*block_size[1]) + 0.5
+    triangles = vertices[indices[block_tris]]
 
     # find barycentric coordinates
+    points = np.array([np.meshgrid(x[i], y[i]) for i in block_inds])
+    points = np.moveaxis(points, 0, 1)
     s, t, mask = barycentric(points, triangles)
-    bar = np.dstack((1 - s - t, s, t))
+    bar = np.stack((1 - s - t, s, t))
 
     # perform z-test
-    vertex_inv_z = 1 / np.maximum(triangles[:, :, :, 2], np.finfo(np.float32).eps)
-    pixel_inv_z = np.sum(bar * vertex_inv_z, axis=-1)
-    mask = np.logical_and(mask, pixel_inv_z <= depth_buffer)
+    vertex_inv_z = 1 / np.maximum(triangles[:, :, 2].T, np.finfo(np.float32).eps)
+    pixel_inv_z = np.sum(bar * vertex_inv_z[:, :, np.newaxis, np.newaxis], axis=0)
+    pixel_inv_z[np.logical_not(mask)] = np.inf
 
     # run pixel shader
     varyings = {}
     for name, attribute in attributes.items():
         if name not in ('position',):
-            x = attribute[indices[triangle_indices[inds_map]]]
-            varyings[name] = persp_interp(bar, vertex_inv_z, pixel_inv_z, x)
+            x = np.array(attribute)[indices[block_tris]]
+            varyings[name] = persp_interp(bar, vertex_inv_z, pixel_inv_z, np.rollaxis(x, 0, 3))
+    color = varyings['color'] if 'color' in varyings else 255
+    color = np.rollaxis(color, 0, 4)
 
-    color_buffer[mask] = varyings['color'][mask] if 'color' in varyings else 255
-    depth_buffer[mask] = pixel_inv_z[mask]
+    return {'color': color, 'depth': pixel_inv_z, 'rmask': mask}
+
+
+def block_merge(block_inds, block_rt, width, height, block_size):
+    color = block_rt['color']
+    depth = block_rt['depth']
+    rmask = block_rt['rmask']
+
+    color_buffer = np.zeros((height, width, 3), dtype=np.float32)
+    depth_buffer = np.full((height, width), np.inf, dtype=np.float32)
+
+    nx, ny = width // block_size[0], height // block_size[1]
+    for i in range(ny):
+        for j in range(nx):
+            block_mask = np.where(block_inds == i*nx + j)[0]
+            if len(block_mask) == 0:
+                continue
+
+            def select(A, idx):
+                m, n = A.shape[1], A.shape[2]
+                I, J = np.ogrid[:m, :n]
+                return A[idx, I, J]
+
+            depth_argmin = np.argmin(depth[block_mask], axis=0)
+            block_color = select(color[block_mask], depth_argmin)
+            block_depth = select(depth[block_mask], depth_argmin)
+            block_rmask = select(rmask[block_mask], depth_argmin)
+
+            oy = i*block_size[1]
+            ox = j*block_size[0]
+            color_buffer[oy:oy+block_size[1], ox:ox+block_size[0]][block_rmask] = block_color[block_rmask]
+            depth_buffer[oy:oy+block_size[1], ox:ox+block_size[0]][block_rmask] = block_depth[block_rmask]
+
+    return {'color': color_buffer, 'depth': depth_buffer}
 
 
 def split_viewport(viewport, axis, split):
@@ -165,16 +201,16 @@ def block_triangles(vertices, indices, width, height, block_size=(16, 16)):
                                 block_size=block_size)
 
     # create block-triangle matrix
-    num_triangles = len(indices)
     nx, ny = int(np.ceil(width / block_size[0])), int(np.ceil(height / block_size[1]))
-    max_len = np.max([len(b) for v, b in triangles])
-    block_triangles_mat = np.full((ny*nx, max_len), num_triangles)
+    block_inds = []
+    block_tris = []
     for v, b in triangles:
         if v[0, 0] < width and v[0, 1] < height:
             i = (v[0, 1] // block_size[1]) * nx + v[0, 0] // block_size[0]
-            block_triangles_mat[i, :len(b)] = b
+            block_inds += [i] * len(b)
+            block_tris += b.tolist()
 
-    return block_triangles_mat
+    return np.array(block_inds), np.array(block_tris)
 
 
 def rasterize(attributes, indices, mvp, width, height, block_size=(16, 16)):
@@ -191,25 +227,15 @@ def rasterize(attributes, indices, mvp, width, height, block_size=(16, 16)):
     vertices = vertices.T
 
     # find block triangles
-    block_triangles_mat = block_triangles(vertices, indices, width, height, block_size=block_size).transpose()
-
-    # add one fake triangle
-    num_vertices = len(vertices)
-    attributes_exp = {}
-    for name, attr in attributes.items():
-        attributes_exp[name] = np.vstack((np.array(attr), [-1.0, -1.0, -1.0]))
-    vertices = np.vstack((vertices, [2.0, 2.0, 2.0, 1.0]))
-    indices = np.vstack((np.array(indices), [num_vertices, num_vertices, num_vertices]))
+    block_inds, block_tris = block_triangles(vertices, indices, width, height, block_size=block_size)
 
     # transform vertices to screen space
     vertices = to_screen_space(vertices, width, height)
 
     # rasterize triangles in blocks
-    color_buffer = np.zeros((height, width, 3))
-    depth_buffer = np.full((height, width), np.inf, dtype=np.float32)
     indices = np.array(indices)
-    for i in range(block_triangles_mat.shape[0]):
-        block_rasterize(color_buffer, depth_buffer, vertices, attributes_exp, indices, block_triangles_mat[i], width, height, block_size)
+    block_rt = block_rasterize(vertices, attributes, indices, block_inds, block_tris, width, height, block_size)
+    rt = block_merge(block_inds, block_rt, width, height, block_size)
 
     # TODO: address y orientation
-    return color_buffer[::-1, :, :]
+    return rt['color'][::-1, :, :]
