@@ -117,32 +117,36 @@ def block_merge(block_inds, block_rt, width, height, block_size):
     return {'color': color_buffer, 'depth': depth_buffer}
 
 
-def split_viewport(viewport, axis, split):
-    v0 = viewport.copy()
-    v0[1, axis] = split
-    v1 = viewport.copy()
-    v1[0, axis] = split
+def split_viewport(vp, axis, split):
+    if axis == 0:
+        v0 = (vp[0][0], vp[0][1]), (split, vp[1][1])
+        v1 = (split, vp[0][1]), (vp[1][0], vp[1][1])
+    else:
+        v0 = (vp[0][0], vp[0][1]), (vp[1][0], split)
+        v1 = (vp[0][0], split), (vp[1][0], vp[1][1])
     return v0, v1
 
 
-def split_triangles(vertices, indices, triangles, viewport, block_size):
-    viewport = np.array(viewport)
-    viewport_size = np.array((viewport[1, 0] - viewport[0, 0], viewport[1, 1] - viewport[0, 1]))
-    if all(viewport_size == block_size):
+def split_triangles(vertices, indices, triangles, viewport, block_size, width, height):
+    viewport_width = viewport[1][0] - viewport[0][0]
+    viewport_height = viewport[1][1] - viewport[0][1]
+    if viewport_width == block_size[0] and viewport_height == block_size[1]:
         return [(viewport, triangles)]
 
     # split viewport
-    axis = 0 if viewport_size[0] > viewport_size[1] else 1
-    split = (viewport[0, axis] + viewport[1, axis]) / 2
+    axis = 0 if viewport_width > viewport_height else 1
+    split = (viewport[0][axis] + viewport[1][axis]) // 2
+    if split >= (width, height)[axis]:
+        return []
     v0, v1 = split_viewport(viewport, axis, split)
 
     # split triangles
     v = vertices[:, indices[:, triangles]]
-    tri_l = triangles[np.any([v[axis, i] < split for i in range(3)], axis=0)]
-    tri_r = triangles[np.any([v[axis, i] >= split for i in range(3)], axis=0)]
+    tri_l = triangles[np.logical_or(v[axis, 0] < split, np.logical_or(v[axis, 1] < split, v[axis, 2] < split))]
+    tri_r = triangles[np.logical_or(v[axis, 0] >= split, np.logical_or(v[axis, 1] >= split, v[axis, 2] >= split))]
 
-    return split_triangles(vertices, indices, tri_l, v0, block_size)\
-        + split_triangles(vertices, indices, tri_r, v1, block_size)
+    return split_triangles(vertices, indices, tri_l, v0, block_size, width, height)\
+        + split_triangles(vertices, indices, tri_r, v1, block_size, width, height)
 
 
 def triangles_in_viewport(vertices, indices, triangles, viewport):
@@ -186,7 +190,7 @@ def block_triangles(vertices, indices, width, height, block_size=(16, 16)):
     height_ex = block_size[1]
     while height_ex < height:
         height_ex *= 2
-    viewport = np.array([[0, 0], [width_ex, height_ex]])
+    viewport = ((0, 0), (width_ex, height_ex))
 
     # transform vertices to screen space
     vertices = to_homogeneous(vertices)
@@ -201,17 +205,18 @@ def block_triangles(vertices, indices, width, height, block_size=(16, 16)):
                                 indices=np.array(indices),
                                 triangles=triangles,
                                 viewport=viewport,
-                                block_size=block_size)
+                                block_size=block_size,
+                                width=width,
+                                height=height)
 
     # create block-triangle matrix
     nx, ny = int(np.ceil(width / block_size[0])), int(np.ceil(height / block_size[1]))
     block_inds = []
     block_tris = []
     for v, b in triangles:
-        if v[0, 0] < width and v[0, 1] < height:
-            i = (v[0, 1] // block_size[1]) * nx + v[0, 0] // block_size[0]
-            block_inds += [i] * len(b)
-            block_tris += b.tolist()
+        i = (v[0][1] // block_size[1]) * nx + v[0][0] // block_size[0]
+        block_inds += [i] * len(b)
+        block_tris += b.tolist()
 
     return np.array(block_inds), np.array(block_tris)
 
