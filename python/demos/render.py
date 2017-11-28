@@ -32,6 +32,7 @@ class App(object):
             self.normals = mesh.meshes[0].normals
             self.uvs = mesh.meshes[0].texturecoords[0, :, 1::-1]
             self.indices = mesh.meshes[0].faces
+            self.colors = np.random.rand(*self.vertices.shape)
 
         # move scene back a little
         mean = np.mean(self.vertices, axis=0)
